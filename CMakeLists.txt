@@ -20,7 +20,7 @@ if (NOT DISABLE_DEFAULT_SCENE)
 endif()
 
 # set with -DDISABLE_MESH_ASSETS_DOWNLOAD=ON on command line or use cmake-gui to set the parameter
-option(DISABLE_MESH_ASSETS_DOWNLOAD "If set to true the test mesh assets are not downloaded by CMake" OFF)
+option(DISABLE_MESH_ASSETS_DOWNLOAD "If set to true the test mesh assets are not downloaded by CMake" ON)
 
 if (NOT DISABLE_MESH_ASSETS_DOWNLOAD)
   download_files(

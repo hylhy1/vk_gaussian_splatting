@@ -25,8 +25,6 @@
 
 #include <vulkan/vulkan_core.h>
 
-#include <nvapp/application.hpp>
-
 #include <nvvk/staging.hpp>
 #include <nvvk/resources.hpp>
 #include <nvvk/resource_allocator.hpp>
@@ -51,30 +49,38 @@ public:
 
   ~SplatSetVk(void) {}
 
-  void init(nvapp::Application*                                 app,
+  void init(VkDevice                                             device,
+            nvvk::QueueInfo                                       queueInfo,
+            VkCommandPool                                         commandPool,
             nvvk::ResourceAllocator*                            alloc,
             nvvk::StagingUploader*                              uploader,
             VkSampler*                                          sampler,
             nvvk::PhysicalDeviceInfo*                           deviceInfo,
             VkPhysicalDeviceAccelerationStructurePropertiesKHR* accelStructProps)
   {
-    m_app        = app;
-    m_alloc      = alloc;
-    m_uploader   = uploader;
-    m_sampler    = sampler;
-    m_deviceInfo = deviceInfo;
-    rtAccelerationStructures.init(m_alloc, m_uploader, m_app->getQueue(0), 2000, 2000);
+    m_device      = device;
+    m_queueInfo   = queueInfo;
+    m_queue       = queueInfo.queue;
+    m_commandPool = commandPool;
+    m_alloc       = alloc;
+    m_uploader    = uploader;
+    m_sampler     = sampler;
+    m_deviceInfo  = deviceInfo;
+    rtAccelerationStructures.init(m_alloc, m_uploader, m_queueInfo, 2000, 2000);
   }
 
   void deinit()
   {
     rtAccelerationStructures.deinit();
-    m_app        = nullptr;
-    m_alloc      = nullptr;
-    m_uploader   = nullptr;
-    m_sampler    = nullptr;
-    m_deviceInfo = nullptr;
-    rtxValid     = false;
+    m_device      = nullptr;
+    m_queueInfo   = {};
+    m_queue       = nullptr;
+    m_commandPool = nullptr;
+    m_alloc       = nullptr;
+    m_uploader    = nullptr;
+    m_sampler     = nullptr;
+    m_deviceInfo  = nullptr;
+    rtxValid      = false;
   }
 
   void resetTransform()
@@ -241,6 +247,10 @@ private:
   // Destroy texture at once, texture must not be in use
   void deinitTexture(nvvk::Image& texture);
 
+  // Helper methods for command buffer management
+  VkCommandBuffer createTempCmdBuffer();
+  void submitAndWaitTempCmdBuffer(VkCommandBuffer cmd);
+
 private:
   // RTX specifics
 
@@ -264,7 +274,12 @@ private:
   float m_rtxKernelMinResponse;
   bool  m_rtxKernelAdaptiveClamping;
 
-  nvapp::Application*       m_app        = nullptr;
+  // Vulkan objects
+  VkDevice      m_device      = nullptr;
+  nvvk::QueueInfo m_queueInfo   = {};
+  VkQueue       m_queue       = nullptr;
+  VkCommandPool m_commandPool = nullptr;
+
   nvvk::ResourceAllocator*  m_alloc      = nullptr;
   nvvk::StagingUploader*    m_uploader   = nullptr;
   nvvk::PhysicalDeviceInfo* m_deviceInfo = nullptr;

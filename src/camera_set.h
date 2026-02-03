@@ -27,7 +27,6 @@
 
 #include <tinygltf/json.hpp>
 
-#include <nvapp/application.hpp>
 #include <nvvk/resource_allocator.hpp>
 #include <nvvk/debug_util.hpp>
 #include <nvvk/staging.hpp>
@@ -204,57 +203,6 @@ private:
     };
   }
 };
-
-/////////// Utility function to import cameras from INRIA json files
-
-static bool importCamerasINRIA(std::string filename, CameraSet& cameraSet)
-{
-  using nlohmann::json;
-
-  try
-  {
-    std::ifstream i(filename);
-    if(!i.is_open())
-      return false;
-
-    // Parsing the file
-    json data;
-    i >> data;
-
-    // Access and print the elements
-    for(const auto& item : data)
-    {
-      int                             id       = item.at("id").get<int>();
-      std::string                     img_name = item.at("img_name").get<std::string>();
-      int                             width    = item.at("width").get<int>();
-      int                             height   = item.at("height").get<int>();
-      std::vector<float>              position = item.at("position").get<std::vector<float>>();
-      std::vector<std::vector<float>> rotation = item.at("rotation").get<std::vector<std::vector<float>>>();
-      float                           fy       = item.at("fy").get<float>();
-      float                           fx       = item.at("fx").get<float>();
-
-      glm::mat3 rotMat(rotation[0][0], rotation[1][0], rotation[2][0], rotation[0][1], rotation[1][1], rotation[2][1],
-                       rotation[0][2], rotation[1][2], rotation[2][2]);
-
-      glm::vec3 up = rotMat * glm::vec3(0.f, 1.f, 0.f);
-      glm::vec3 at = rotMat * glm::vec3(0.f, 0.f, 1.f);
-
-      Camera newCam;
-      newCam.eye = {position[0], position[1], position[2]};
-      newCam.ctr = at;
-      newCam.up  = up;
-
-      // add to CameraSet
-      cameraSet.createPreset(newCam);
-    }
-    i.close();
-    return true;
-  }
-  catch(...)
-  {
-    return false;
-  }
-}
 
 }  // namespace vk_gaussian_splatting
 

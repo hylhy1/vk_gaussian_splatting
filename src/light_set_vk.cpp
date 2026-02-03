@@ -28,17 +28,15 @@
 #include <nvutils/logger.hpp>
 #include <nvutils/timers.hpp>
 
-void LightSetVk::init(nvapp::Application* app, nvvk::ResourceAllocator* alloc, nvvk::StagingUploader* uploader)
+void LightSetVk::init(nvvk::ResourceAllocator* alloc, nvvk::StagingUploader* uploader)
 {
-  m_app      = app;
   m_alloc    = alloc;
   m_uploader = uploader;
   lights.resize(MAX_LIGHTS);
   // create the buffer
   NVVK_CHECK(m_alloc->createBuffer(lightsBuffer, lights.size() * sizeof(shaderio::LightSource), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
   NVVK_DBG_NAME(lightsBuffer.buffer);
-  // then upload the buffer with default light
-  updateBuffer();
+  // buffer will be uploaded when updateBuffer is called with a command buffer
 };
 
 // free the vulkan buffer and clear the light set
@@ -50,15 +48,10 @@ void LightSetVk::deinit()
   lights[0] = shaderio::LightSource();
 };
 
-void LightSetVk::updateBuffer()
+void LightSetVk::updateBuffer(VkCommandBuffer cmd)
 {
   // Upload the lights buffer
-
-  VkCommandBuffer cmdBuf = m_app->createTempCmdBuffer();
-
   NVVK_CHECK(m_uploader->appendBuffer(lightsBuffer, 0, std::span(lights)));
-
-  m_uploader->cmdUploadAppended(cmdBuf);
-  m_app->submitAndWaitTempCmdBuffer(cmdBuf);
+  m_uploader->cmdUploadAppended(cmd);
   m_uploader->releaseStaging();
 }

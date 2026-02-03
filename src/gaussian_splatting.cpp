@@ -121,8 +121,8 @@ void GaussianSplatting::onAttach(nvapp::Application* app)
   vkGetPhysicalDeviceProperties2(m_app->getPhysicalDevice(), &prop2);
 
   // init the Vulkan splatSet and the mesh set for mesh compositing
-  m_splatSetVk.init(m_app, &m_alloc, &m_uploader, &m_sampler, &m_physicalDeviceInfo, &m_accelStructProps);
-  m_meshSetVk.init(m_app, &m_alloc, &m_uploader, &m_accelStructProps);
+  m_splatSetVk.init(m_device, m_app->getQueue(0), m_app->getCommandPool(), &m_alloc, &m_uploader, &m_sampler, &m_physicalDeviceInfo, &m_accelStructProps);
+
   m_cameraSet.init(cameraManip.get());
 };
 
@@ -135,7 +135,7 @@ void GaussianSplatting::onDetach()
   deinitAll();
   // release application wide related resources
   m_splatSetVk.deinit();
-  m_meshSetVk.deinit();
+
   m_profilerGpuTimer.deinit();
   m_profilerManager->destroyTimeline(m_profilerTimeline);
   m_profilerTimeline = nullptr;
@@ -165,7 +165,7 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
   NVVK_DBG_SCOPE(cmd);
 
   // update buffers, rebuild shaders and pipelines if needed
-  processUpdateRequests();
+  processUpdateRequests(cmd);
 
   // 0 if not ready so the rendering does not
   // touch the splat set while loading
@@ -178,40 +178,11 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
 
   //////////////////
   // Full raytrace pipeline
-
-  if(m_shaders.valid && splatCount && prmSelectedPipeline == PIPELINE_RTX)
-  {
-    if(!m_splatSetVk.rtxValid)
-    {
-      // let's switch back to raster, RTX is KO
-      prmSelectedPipeline = PIPELINE_MESH;
-      return;
-    }
-
-    if(prmRtx.temporalSampling && !updateFrameCounter())
-      return;
-
-    collectReadBackValuesIfNeeded();
-
-    updateAndUploadFrameInfoUBO(cmd, splatCount);
-
-    raytrace(cmd);
-
-    readBackIndirectParametersIfNeeded(cmd);
-
-    updateRenderingMemoryStatistics(cmd, splatCount);
-
-    // Attention: early return
-    return;
-  }
-
   ///////////////////
   // From this point we are using full raster or hybrid.
 
   if(prmRtx.temporalSampling && !updateFrameCounter())
     return;
-
-  // Handle device-host data update and splat sorting if a scene exist
   if(m_shaders.valid && splatCount)
   {
     // collect readback results from previous frame if any
@@ -241,17 +212,12 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
     colorBufferId = COLOR_AUX1;
 
   // raytrace the mesh depth using primary rays if needed
-  bool raytraceMeshDepth = m_shaders.valid && !m_meshSetVk.instances.empty() && prmSelectedPipeline == PIPELINE_HYBRID_3DGUT;
+
 
   nvvk::cmdImageMemoryBarrier(cmd, {m_gBuffers.getDepthImage(),
                                     VK_IMAGE_LAYOUT_UNDEFINED,  // or previous
                                     VK_IMAGE_LAYOUT_GENERAL,    // for ray tracing writes
                                     {VK_IMAGE_ASPECT_DEPTH_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}});
-
-  if(raytraceMeshDepth)
-  {
-    raytrace(cmd, true);
-  }
 
   // Drawing the primitives in the G-Buffer
   {
@@ -265,10 +231,7 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
     colorAttachment.imageView                 = m_gBuffers.getColorImageView(colorBufferId);
     colorAttachment.clearValue                = {m_clearColor};
     VkRenderingAttachmentInfo depthAttachment = DEFAULT_VkRenderingAttachmentInfo;
-    if(raytraceMeshDepth)
-    {
-      depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // <-- preserve existing depth
-    }
+
     depthAttachment.imageView  = m_gBuffers.getDepthImageView();
     depthAttachment.clearValue = {.depthStencil = DEFAULT_VkClearDepthStencilValue};
 
@@ -293,10 +256,7 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
     vkCmdSetScissorWithCount(cmd, 1, &scissor);
 
     // mesh first so that occluded splats fragments will be discarded by depth test
-    if(m_shaders.valid && !m_meshSetVk.instances.empty() && !raytraceMeshDepth)
-    {
-      drawMeshPrimitives(cmd);
-    }
+    
 
     // splat set
     if(m_shaders.valid && splatCount)
@@ -316,11 +276,11 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
   }
 
   // raytrace the secondary rays if needed
-  if(m_shaders.valid && splatCount && m_splatSetVk.rtxValid && !m_meshSetVk.instances.empty()
-     && (prmSelectedPipeline == PIPELINE_HYBRID || prmSelectedPipeline == PIPELINE_HYBRID_3DGUT))
-  {
-    raytrace(cmd);
-  }
+  //if(m_shaders.valid && splatCount && m_splatSetVk.rtxValid && !m_meshSetVk.instances.empty()
+
+  //{
+  //  raytrace(cmd);
+  //}
 
   // Perform post processings if needed
   if(prmRtx.temporalSampling && prmFrame.frameSampleId > 0)
@@ -334,33 +294,130 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
   updateRenderingMemoryStatistics(cmd, splatCount);
 }
 
-void GaussianSplatting::processUpdateRequests(void)
+void GaussianSplatting::onUIRender() {
+  /////////////
+  // Rendering Viewport display the GBuffer
+  {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    ImGui::Begin("Viewport");
+    ImGui::Image((ImTextureID)m_gBuffers.getDescriptorSet(), ImGui::GetContentRegionAvail());
+
+    ImVec2 wp              = ImGui::GetWindowPos();
+    ImVec2 ws              = ImGui::GetWindowSize();
+    ImVec2 mp              = ImGui::GetMousePos();
+    ImVec2 mouseInViewport = ImVec2(mp.x - wp.x, mp.y - wp.y);
+    if(mouseInViewport.x < 0 || mouseInViewport.y < 0 || mouseInViewport.x >= ws.x || mouseInViewport.y >= ws.y)
+      prmFrame.cursor.x = prmFrame.cursor.y = -1;  // just so it is easy to test in shader if pos is valid
+    else
+      prmFrame.cursor = {mouseInViewport.x, mouseInViewport.y};
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+  }
+  if(prmScene.enableDefaultScene && m_loadedSceneFilename.empty() && prmScene.sceneToLoadFilename.empty()
+     && m_plyLoader.getStatus() == PlyLoaderAsync::State::E_READY)
+  {
+    const std::vector<std::filesystem::path> defaultSearchPaths = getResourcesDirs();
+    prmScene.sceneToLoadFilename = nvutils::findFile("flowers_1/flowers_1.ply", defaultSearchPaths).string();
+    prmScene.enableDefaultScene  = false;
+  }
+  // do we need to load a new scene ?
+  if(!prmScene.sceneToLoadFilename.empty() && m_plyLoader.getStatus() == PlyLoaderAsync::State::E_READY)
+  {
+
+    if(!m_loadedSceneFilename.empty() && prmScene.projectToLoadFilename.empty())
+      ImGui::OpenPopup("Load .ply file ?");
+
+    // Always center this window when appearing
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    bool doReset = true;
+
+    if(ImGui::BeginPopupModal("Load .ply file ?", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+      doReset = false;
+
+      ImGui::Text("The current project will be entirely replaced.\nThis operation cannot be undone!");
+      ImGui::Separator();
+
+      if(ImGui::Button("OK", ImVec2(120, 0)))
+      {
+        doReset = true;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SetItemDefaultFocus();
+      ImGui::SameLine();
+      if(ImGui::Button("Cancel", ImVec2(120, 0)))
+      {
+        // cancel any request leading to a reset
+        prmScene.sceneToLoadFilename   = "";
+        prmScene.projectToLoadFilename = "";
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
+    if(doReset)
+    {
+      // reset if a scene already exists
+      const auto splatCount = m_splatSet.positions.size() / 3;
+      if(splatCount)
+      {
+        deinitAll();
+      }
+
+      m_loadedSceneFilename = prmScene.sceneToLoadFilename;
+      //
+      vkDeviceWaitIdle(m_device);
+
+      std::cout << "Start loading file " << prmScene.sceneToLoadFilename << std::endl;
+      if(!m_plyLoader.loadScene(prmScene.sceneToLoadFilename, m_splatSet))
+      {
+        // this should never occur since status is READY.
+        std::cout << "Error: cannot start scene load while loader is not ready status=" << m_plyLoader.getStatus() << std::endl;
+      }
+      else
+      {
+        // open the modal window that will collect results
+        ImGui::OpenPopup("Loading");
+      }
+
+      // reset request
+      prmScene.sceneToLoadFilename.clear();
+    }
+  }
+  while(m_plyLoader.getStatus() == PlyLoaderAsync::State::E_LOADING)
+  {
+    using namespace std::chrono_literals;
+    std::this_thread::sleep_for(100ms);
+  }
+  switch(m_plyLoader.getStatus())
+  {
+    case PlyLoaderAsync::State::E_LOADED: {
+      // TODO add error modal or better continue on error since it is false only if shaders does not compile
+      // Then print shader compilation error directly as a viewport overlay
+      // Will allow for fix and hot reload
+      if(!initAll())
+      {
+        deinitScene();
+      }
+      m_plyLoader.reset();
+    }
+    break;
+    default: {
+    }
+  }
+}
+
+void GaussianSplatting::processUpdateRequests(VkCommandBuffer cmd)
 {
 
   // Automatic and Sanity settings depending in pipeline
-  if(prmSelectedPipeline != PIPELINE_RTX && prmSelectedPipeline != PIPELINE_HYBRID_3DGUT && prmSelectedPipeline != PIPELINE_MESH_3DGUT)
+  if(1)
   {
     prmRtx.temporalSampling = false;
     // prmRtx.dofEnabled       = false;
-  }
-  else
-  {
-    if(prmRtx.temporalSamplingMode == TEMPORAL_SAMPLING_AUTO && m_cameraSet.getCamera().dofEnabled)
-    {
-      prmRtx.temporalSampling = true;
-    }
-    else
-    {
-      prmRtx.temporalSampling = (prmRtx.temporalSamplingMode == TEMPORAL_SAMPLING_ENABLED);
-    }
-  }
-
-  // process delayed requests
-  if((prmSelectedPipeline == PIPELINE_RTX || prmSelectedPipeline == PIPELINE_HYBRID || prmSelectedPipeline == PIPELINE_HYBRID_3DGUT)
-     && m_requestDelayedUpdateSplatAs)
-  {
-    m_requestUpdateSplatAs        = true;
-    m_requestDelayedUpdateSplatAs = false;
   }
 
   bool needUpdate = m_requestUpdateSplatData || m_requestUpdateSplatAs || m_requestUpdateMeshData
@@ -399,13 +456,11 @@ void GaussianSplatting::processUpdateRequests(void)
     {
       if(m_requestDeleteSelectedMesh)
       {
-        m_meshSetVk.deleteInstance(uint32_t(m_selectedItemIndex));
+
         m_selectedItemIndex = -1;
       }
 
-      m_meshSetVk.rtxDeinitAccelerationStructures();
-      m_meshSetVk.updateObjDescriptionBuffer();
-      m_meshSetVk.rtxInitAccelerationStructures();
+      
     }
 
     if(initShaders())
@@ -422,7 +477,7 @@ void GaussianSplatting::processUpdateRequests(void)
   // updates does not require description set changes
   if(m_requestUpdateLightsBuffer)
   {
-    m_lightSet.updateBuffer();
+    m_lightSet.updateBuffer(cmd);
     m_requestUpdateLightsBuffer = false;
   }
 
@@ -468,13 +523,6 @@ void GaussianSplatting::updateAndUploadFrameInfoUBO(VkCommandBuffer cmd, const u
   prmFrame.basisViewport           = glm::vec2(1.0f / m_viewSize.x, 1.0f / m_viewSize.y);
   prmFrame.inverseFocalAdjustment  = 1.0f / focalAdjustment;
 
-  if(camera.model == CAMERA_FISHEYE && prmSelectedPipeline != PIPELINE_VERT && prmSelectedPipeline != PIPELINE_MESH
-     && prmSelectedPipeline != PIPELINE_HYBRID)
-  {
-    // FISHEYE focal
-    prmFrame.focal = glm::vec2(1.0, -1.0) * prmFrame.viewport / prmFrame.fovRad;
-  }
-  else
   {
     // PIHNOLE focal
     const float focalLengthX = prmFrame.projectionMatrix[0][0] * 0.5f * devicePixelRatio * m_viewSize.x;
@@ -641,8 +689,7 @@ void GaussianSplatting::drawSplatPrimitives(VkCommandBuffer cmd, const uint32_t 
   NVVK_DBG_SCOPE(cmd);
 
   // Do we need to activate depth test and Write ?
-  bool needDepth = ((prmRaster.sortingMethod != SORTING_GPU_SYNC_RADIX) && prmRender.opacityGaussianDisabled)
-                   || !m_meshSetVk.instances.empty();
+  bool needDepth = ((prmRaster.sortingMethod != SORTING_GPU_SYNC_RADIX) && prmRender.opacityGaussianDisabled);
 
   // Model transform
   m_pcRaster.modelMatrix        = m_splatSetVk.transform;
@@ -679,65 +726,9 @@ void GaussianSplatting::drawSplatPrimitives(VkCommandBuffer cmd, const uint32_t 
       vkCmdDrawIndexedIndirect(cmd, m_indirect.buffer, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
     }
   }
-  else
-  {  // in mesh pipeline mode or in hybrid mode
-    // Pipeline using mesh shader
-
-    if(prmSelectedPipeline == PIPELINE_MESH || prmSelectedPipeline == PIPELINE_HYBRID)
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipelineGsMesh);
-    if(prmSelectedPipeline == PIPELINE_MESH_3DGUT || prmSelectedPipeline == PIPELINE_HYBRID_3DGUT)
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline3dgutMesh);
-
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
-
-    // overrides the pipeline setup for depth test/write
-    vkCmdSetDepthWriteEnable(cmd, (VkBool32)needDepth);
-    vkCmdSetDepthTestEnable(cmd, (VkBool32)needDepth);
-
-    if(prmRaster.sortingMethod != SORTING_GPU_SYNC_RADIX)
-    {
-      // run the workgroups
-      vkCmdDrawMeshTasksEXT(cmd, (prmFrame.splatCount + prmRaster.meshShaderWorkgroupSize - 1) / prmRaster.meshShaderWorkgroupSize,
-                            1, 1);
-    }
-    else
-    {
-      // run the workgroups
-      vkCmdDrawMeshTasksIndirectEXT(cmd, m_indirect.buffer, offsetof(shaderio::IndirectParams, groupCountX), 1,
-                                    sizeof(VkDrawMeshTasksIndirectCommandEXT));
-    }
-  }
 }
 
-void GaussianSplatting::drawMeshPrimitives(VkCommandBuffer cmd)
-{
 
-  NVVK_DBG_SCOPE(cmd);
-
-  VkDeviceSize offset{0};
-
-  // Drawing all triangles
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipelineMesh);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
-  // overrides the pipeline setup for depth test/write
-  vkCmdSetDepthWriteEnable(cmd, (VkBool32) true);
-  vkCmdSetDepthTestEnable(cmd, (VkBool32) true);
-
-  for(const Instance& inst : m_meshSetVk.instances)
-  {
-    auto& model                   = m_meshSetVk.meshes[inst.objIndex];
-    m_pcRaster.objIndex           = inst.objIndex;  // Telling which object is drawn
-    m_pcRaster.modelMatrix        = inst.transform;
-    m_pcRaster.modelMatrixInverse = inst.transformInverse;
-
-    vkCmdPushConstants(cmd, m_pipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(shaderio::PushConstant), &m_pcRaster);
-    vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer.buffer, &offset);
-    vkCmdBindIndexBuffer(cmd, model.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, model.nbIndices, 1, 0, 0, 0);
-  }
-}
 
 void GaussianSplatting::collectReadBackValuesIfNeeded(void)
 {
@@ -838,8 +829,7 @@ void GaussianSplatting::deinitAll()
   m_splatSetVk.deinitDataStorage();
   m_splatSetVk.rtxDeinitSplatModel();
   m_splatSetVk.rtxDeinitAccelerationStructures();
-  m_meshSetVk.deinitDataStorage();
-  m_meshSetVk.rtxDeinitAccelerationStructures();
+  
   m_lightSet.deinit();
   m_cameraSet.deinit();
   deinitShaders();
@@ -865,7 +855,7 @@ bool GaussianSplatting::initAll()
   // reset general parameters
   resetRenderSettings();
 
-  m_lightSet.init(m_app, &m_alloc, &m_uploader);
+  m_lightSet.init(&m_alloc, &m_uploader);
   // init a new setup
   if(!initShaders())
   {
@@ -901,7 +891,7 @@ void GaussianSplatting::updateSlangMacros()
 {
   m_shaderMacros =  // comment to force clang new line and better indent
       {{"PIPELINE", std::to_string(prmSelectedPipeline)},
-       {"HYBRID_ENABLED", std::to_string((int)(prmSelectedPipeline == PIPELINE_HYBRID || prmSelectedPipeline == PIPELINE_HYBRID_3DGUT))},
+       {"HYBRID_ENABLED", "0"},
        {"CAMERA_TYPE", std::to_string(m_cameraSet.getCamera().model)},
        {"VISUALIZE", std::to_string((int)prmRender.visualize)},
        {"DISABLE_OPACITY_GAUSSIAN", std::to_string((int)prmRender.opacityGaussianDisabled)},
@@ -927,7 +917,7 @@ void GaussianSplatting::updateSlangMacros()
        {"PAYLOAD_ARRAY_SIZE", std::to_string(prmRtx.payloadArraySize)},
        {"RTX_USE_INSTANCES", std::to_string((int)prmRtxData.useTlasInstances)},
        {"RTX_USE_AABBS", std::to_string((int)prmRtxData.useAABBs)},
-       {"RTX_USE_MESHES", std::to_string((int)m_meshSetVk.instances.size())},
+
        {"RTX_DOF_ENABLED", std::to_string((int)m_cameraSet.getCamera().dofEnabled)}};
 
   m_slangCompiler.clearMacros();
@@ -1128,11 +1118,8 @@ void GaussianSplatting::initPipelines()
       writeContainer.append(bindings.getWriteSet(BINDING_SH_BUFFER, m_descriptorSet), m_splatSetVk.sphericalHarmonicsBuffer);
   }
 
-  if(m_meshSetVk.instances.size())
-  {
-    writeContainer.append(bindings.getWriteSet(BINDING_MESH_DESCRIPTORS, m_descriptorSet),
-                          m_meshSetVk.objectDescriptionsBuffer.buffer);
-  }
+
+
 
   if(m_lightSet.size())
   {
@@ -1251,56 +1238,6 @@ void GaussianSplatting::initPipelines()
     }
   }
   // Create the 3D mesh rasterization pipeline
-  {
-
-    // Preparing the pipeline states
-    nvvk::GraphicsPipelineState pipelineState;
-    pipelineState.rasterizationState.cullMode = VK_CULL_MODE_NONE;
-
-    // deactivates blending and set blend func
-    pipelineState.colorBlendEnables[0]                       = VK_FALSE;
-    pipelineState.colorBlendEquations[0].alphaBlendOp        = VK_BLEND_OP_ADD;
-    pipelineState.colorBlendEquations[0].colorBlendOp        = VK_BLEND_OP_ADD;
-    pipelineState.colorBlendEquations[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    pipelineState.colorBlendEquations[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    pipelineState.colorBlendEquations[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    pipelineState.colorBlendEquations[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-
-    // TODOC
-    pipelineState.rasterizationState.cullMode        = VK_CULL_MODE_NONE;
-    pipelineState.depthStencilState.depthWriteEnable = VK_TRUE;
-    pipelineState.depthStencilState.depthTestEnable  = VK_TRUE;
-
-    // create the pipeline
-    const auto BINDING_ATTR_VERTEX = 0;
-
-    pipelineState.vertexBindings   = {{// 3 pos and 3 nrm per vertex
-                                       .binding = BINDING_ATTR_VERTEX,
-                                       .stride  = 6 * sizeof(float),
-                                       .divisor = 1}};
-    pipelineState.vertexAttributes = {{.location = ATTRIBUTE_LOC_MESH_POSITION,
-                                       .binding  = BINDING_ATTR_VERTEX,
-                                       .format   = VK_FORMAT_R32G32B32_SFLOAT,
-                                       .offset   = static_cast<uint32_t>(offsetof(ObjVertex, pos))},
-                                      {.location = ATTRIBUTE_LOC_MESH_NORMAL,
-                                       .binding  = BINDING_ATTR_VERTEX,
-                                       .format   = VK_FORMAT_R32G32B32_SFLOAT,
-                                       .offset   = static_cast<uint32_t>(offsetof(ObjVertex, nrm))}};
-
-    nvvk::GraphicsPipelineCreator creator;
-    creator.pipelineInfo.layout                  = m_pipelineLayout;
-    creator.colorFormats                         = {m_colorFormat};
-    creator.renderingState.depthAttachmentFormat = m_depthFormat;
-    // The dynamic state is used to change the depth test state dynamically
-    creator.dynamicStateValues.push_back(VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE);
-    creator.dynamicStateValues.push_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE);
-
-    creator.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main", m_shaders.meshVertexShader);
-    creator.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", m_shaders.meshFragmentShader);
-
-    creator.createGraphicsPipeline(m_device, nullptr, pipelineState, &m_graphicsPipelineMesh);
-    NVVK_DBG_NAME(m_graphicsPipelineMesh);
-  }
 }
 
 // include RTX one
@@ -1462,9 +1399,6 @@ void GaussianSplatting::benchmarkAdvance()
   m_benchmarkId++;
 }
 
-/////////////////////////////////////////////
-/// RTX
-
 //--------------------------------------------------------------------------------------------------
 // This descriptor set holds the Acceleration structure and the output image
 //
@@ -1528,11 +1462,8 @@ void GaussianSplatting::initRtDescriptorSet()
     writeContainer.append(m_rtDescriptorBindings.getWriteSet(RTX_BINDING_TLAS_SPLATS, m_rtDescriptorSet),
                           m_splatSetVk.rtAccelerationStructures.tlas);
   // mesh TLAS
-  if(m_meshSetVk.instances.size() && (m_meshSetVk.rtAccelerationStructures.tlas.accel != NULL))
-  {
-    writeContainer.append(m_rtDescriptorBindings.getWriteSet(RTX_BINDING_TLAS_MESH, m_rtDescriptorSet),
-                          m_meshSetVk.rtAccelerationStructures.tlas);
-  }
+
+
 
   // actually write
   vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writeContainer.size()), writeContainer.data(), 0, nullptr);

@@ -75,7 +75,6 @@
 #include <nvapp/elem_default_title.hpp>
 #include <nvapp/elem_default_menu.hpp>
 //
-#include <nvgui/axis.hpp>
 #include <nvgui/enum_registry.hpp>
 #include <nvgui/property_editor.hpp>
 #include <nvgui/file_dialog.hpp>
@@ -91,13 +90,13 @@
 #include "splat_set_vk.h"
 #include "ply_loader_async.h"
 #include "splat_sorter_async.h"
-#include "mesh_set_vk.h"
+
 #include "light_set_vk.h"
 #include "camera_set.h"
 
 namespace vk_gaussian_splatting {
 
-class GaussianSplatting
+class GaussianSplatting : public nvapp::IAppElement
 {
 public:
   // Benchmarking, print extended info
@@ -109,24 +108,26 @@ public:
   // public so that it can be accessed by main
   std::shared_ptr<nvutils::CameraManipulator> cameraManip{};
 
-protected:
   GaussianSplatting(nvutils::ProfilerManager* profilerManager, nvutils::ParameterRegistry* parameterRegistry);
 
-  ~GaussianSplatting();
+  ~GaussianSplatting() override;
 
-  void onAttach(nvapp::Application* app);
+  void onAttach(nvapp::Application* app) override;
 
-  void onDetach();
+  void onDetach() override;
 
-  void onResize(VkCommandBuffer cmd, const VkExtent2D& size);
+  void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
 
-  void onPreRender();
+  void onPreRender() override;
 
   // reset frame counter for temporal accumulated multi-sampling
   // will cause a restart of the frame construction
   inline void resetFrameCounter() { prmFrame.frameSampleId = -1; }
 
-  void onRender(VkCommandBuffer cmd);
+  void onRender(VkCommandBuffer cmd) override;
+
+  void onUIRender() override;
+  //override;
 
   // reset the rendering settings that can
   // be modified by the user interface
@@ -175,7 +176,7 @@ private:
 
   // process eventual update requests comming from UI or benchmark
   // that requires to be performed before a new rendering after a DeviceWaitIdle
-  void processUpdateRequests(void);
+  void processUpdateRequests(VkCommandBuffer cmd);
 
   // Updates frame information uniform buffer and frame camera info
   void updateAndUploadFrameInfoUBO(VkCommandBuffer cmd, const uint32_t splatCount);
@@ -227,7 +228,7 @@ protected:
   // 3DGS/3DGRT model in VRAM
   SplatSetVk m_splatSetVk = {};
   // Set of meshes in VRAM
-  MeshSetVk m_meshSetVk = {};
+
   // Set of lights in RAM and VRAM
   LightSetVk m_lightSet = {};
   // Set of cameras in RAM

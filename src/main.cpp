@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <gaussian_splatting_ui.h>
+#include <gaussian_splatting.h>
 
 using namespace vk_gaussian_splatting;
 
@@ -56,11 +56,8 @@ int main(int argc, char** argv)
 
   registerCommandLineParameters(&parameterRegistry);
 
-  /////////////////////////////////
-  // Create elements of the application, including the core of the sample (gaussianSplatting)
-
   // The GaussianSplattingUI includes the core GaussianSplatting class by inheritance
-  auto gaussianSplatting = std::make_shared<GaussianSplattingUI>(&profilerManager, &parameterRegistry, &benchmarkMode);
+  auto gaussianSplatting = std::make_shared<GaussianSplatting>(&profilerManager, &parameterRegistry);
 
   // add a few more parameters to registry and parser to handle sequencer settings
   sequencerInfo.registerScriptParameters(parameterRegistry, parameterParser);
@@ -132,12 +129,11 @@ int main(int argc, char** argv)
 
   // Setting up the validation layers
   nvvk::ValidationSettings vvlInfo{};
-  // vvlInfo.validate_best_practices = true;
-  vvlInfo.validate_core = false;
-  //vvlInfo.setPreset(nvvk::ValidationSettings::LayerPresets::eSynchronization);
-  vkSetup.instanceCreateInfoExt = vvlInfo.buildPNextChain();  // Adding the validation layer settings
 
-  // Create Vulkan context
+  vvlInfo.validate_core = false;
+
+  vkSetup.instanceCreateInfoExt = vvlInfo.buildPNextChain(); 
+
   if(vkContext.init(vkSetup) != VK_SUCCESS)
   {
     LOGE("Error in Vulkan context creation\n");
@@ -154,26 +150,6 @@ int main(int argc, char** argv)
   appInfo.hasUndockableViewport = true;
   appInfo.useMenu               = !benchmarkMode;  // we hide the menu in benchmark mode
 
-  // Setting up the layout of the application
-  appInfo.dockSetup = [](ImGuiID viewportID) {
-    // right side panel container
-    ImGuiID assetsID = ImGui::DockBuilderSplitNode(viewportID, ImGuiDir_Right, 0.20F, nullptr, &viewportID);
-    ImGui::DockBuilderDockWindow("Assets", assetsID);
-    ImGuiID propertiesID = ImGui::DockBuilderSplitNode(assetsID, ImGuiDir_Down, 0.75F, nullptr, &assetsID);
-    ImGui::DockBuilderDockWindow("Properties", propertiesID);
-
-    // bottom panel container
-    ImGuiID memoryID = ImGui::DockBuilderSplitNode(viewportID, ImGuiDir_Down, 0.45F, nullptr, &viewportID);
-    ImGui::DockBuilderDockWindow("Memory Statistics", memoryID);
-    ImGuiID profilerID = ImGui::DockBuilderSplitNode(memoryID, ImGuiDir_Right, 0.33F, nullptr, &memoryID);
-    ImGui::DockBuilderDockWindow("Profiler", profilerID);
-    ImGuiID renderingID = ImGui::DockBuilderSplitNode(profilerID, ImGuiDir_Down, 0.30F, nullptr, &profilerID);
-    ImGui::DockBuilderDockWindow("Rendering Statistics", renderingID);
-  };
-
-  //
-  gaussianSplatting->guiRegisterIniFileHandlers();
-
   // Initializes the application
   application.init(appInfo);
 
@@ -181,33 +157,12 @@ int main(int argc, char** argv)
   // onAttach will be invoked on elements at this stage
   application.addElement(elemSequencer);
   application.addElement(gaussianSplatting);
-  application.addElement(std::make_shared<nvapp::ElementDefaultWindowTitle>("", fmt::format("({})", "GLSL")));
 
   auto elemCamera = std::make_shared<nvapp::ElementCamera>();
   elemCamera->setCameraManipulator(gaussianSplatting->cameraManip);
   application.addElement(elemCamera);
+  application.setVsync(true);
 
-  if(benchmarkMode)
-  {
-    // In this mode we do not display the GUI elements
-    application.setVsync(false);
-  }
-  else
-  {
-    application.addElement(std::make_shared<nvgpu_monitor::ElementGpuMonitor>());
-
-    // setup the profiler element and view
-    auto profilerViewSettings = std::make_shared<nvapp::ElementProfiler::ViewSettings>(
-        nvapp::ElementProfiler::ViewSettings{.name       = "Profiler",
-                                             .defaultTab = nvapp::ElementProfiler::TABLE,
-                                             .pieChart   = {.cpuTotal = false, .levels = true},
-                                             .lineChart  = {.cpuLine = false}});
-
-    // setting are optional, but can be used to expose to sample code (like hiding views for benchmark)
-    application.addElement(std::make_shared<nvapp::ElementProfiler>(&profilerManager, profilerViewSettings));
-  }
-
-  //
   application.run();
 
   // Cleanup

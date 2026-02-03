@@ -36,11 +36,6 @@
 
 // type of pipeline used
 #define PIPELINE_VERT 0
-#define PIPELINE_MESH 1
-#define PIPELINE_RTX 2
-#define PIPELINE_HYBRID 3        // Hybrid rendering: raster primary rays (3DGS), raytrace secondary rays (3DGRT)
-#define PIPELINE_MESH_3DGUT 4    // 3DGUT (Unscented Transform) rasterization using mesh shaders
-#define PIPELINE_HYBRID_3DGUT 5  // Hybrid rendering: raster primary rays (3DGUT), raytrace secondary rays (3DGRT)
 
 // visualization mode
 #define VISUALIZE_FINAL 0

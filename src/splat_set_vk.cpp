@@ -152,7 +152,7 @@ void SplatSetVk::initDataBuffers(SplatSet& splatSet)
   auto       startTime  = std::chrono::high_resolution_clock::now();
   const auto splatCount = (uint32_t)splatSet.positions.size() / 3;
 
-  VkCommandBuffer cmd = m_app->createTempCmdBuffer();
+  VkCommandBuffer cmd = createTempCmdBuffer();
 
   // host buffers flags
   VkBufferUsageFlagBits2   hostBufferUsageFlags = VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT;
@@ -429,7 +429,7 @@ void SplatSetVk::initDataBuffers(SplatSet& splatSet)
                        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
                        0, 1, &barrier, 0, NULL, 0, NULL);
 
-  m_app->submitAndWaitTempCmdBuffer(cmd);
+  submitAndWaitTempCmdBuffer(cmd);
 
   // free temp buffers
   for(auto& buffer : buffersToDestroy)
@@ -712,7 +712,7 @@ void SplatSetVk::initTexture(uint32_t width, uint32_t height, uint32_t bufsize, 
   createInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   createInfo.format            = format;
 
-  VkCommandBuffer cmd = m_app->createTempCmdBuffer();
+  VkCommandBuffer cmd = createTempCmdBuffer();
   NVVK_CHECK(m_alloc->createImage(texture, createInfo, DEFAULT_VkImageViewCreateInfo));
   NVVK_DBG_NAME(texture.image);
   NVVK_DBG_NAME(texture.descriptor.imageView);
@@ -722,7 +722,7 @@ void SplatSetVk::initTexture(uint32_t width, uint32_t height, uint32_t bufsize, 
 
   texture.descriptor.sampler = sampler;
 
-  m_app->submitAndWaitTempCmdBuffer(cmd);
+  submitAndWaitTempCmdBuffer(cmd);
 }
 
 void SplatSetVk::deinitTexture(nvvk::Image& texture)
@@ -867,7 +867,7 @@ void SplatSetVk::rtxInitSplatModel(SplatSet& splatSet, bool useInstances, bool u
   m_splatModel.nbAABB     = static_cast<uint32_t>(aabbs.size());
 
   // Create the buffers on Device and copy vertices and indices
-  VkCommandBuffer    cmd             = m_app->createTempCmdBuffer();
+  VkCommandBuffer    cmd             = createTempCmdBuffer();
   VkBufferUsageFlags flag            = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   VkBufferUsageFlags rayTracingFlags =  // used also for building acceleration structures
       flag | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -891,7 +891,7 @@ void SplatSetVk::rtxInitSplatModel(SplatSet& splatSet, bool useInstances, bool u
   NVVK_DBG_NAME(m_splatModel.aabbBuffer.buffer);
 
   m_uploader->cmdUploadAppended(cmd);
-  m_app->submitAndWaitTempCmdBuffer(cmd);
+  submitAndWaitTempCmdBuffer(cmd);
   m_uploader->releaseStaging();
 }
 
@@ -1035,6 +1035,50 @@ void SplatSetVk::rtxInitAccelerationStructures(SplatSet& splatSet)
 
   //
   rtxValid = true;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Helper methods for command buffer management
+
+VkCommandBuffer SplatSetVk::createTempCmdBuffer()
+{
+  VkCommandBuffer cmd;
+  VkCommandBufferAllocateInfo allocInfo{};
+  allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  allocInfo.commandPool = m_commandPool;
+  allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  allocInfo.commandBufferCount = 1;
+
+  NVVK_CHECK(vkAllocateCommandBuffers(m_device, &allocInfo, &cmd));
+
+  VkCommandBufferBeginInfo beginInfo{};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+  NVVK_CHECK(vkBeginCommandBuffer(cmd, &beginInfo));
+
+  return cmd;
+}
+
+void SplatSetVk::submitAndWaitTempCmdBuffer(VkCommandBuffer cmd)
+{
+  NVVK_CHECK(vkEndCommandBuffer(cmd));
+
+  VkSubmitInfo submitInfo{};
+  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &cmd;
+
+  VkFence fence;
+  VkFenceCreateInfo fenceInfo{};
+  fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  NVVK_CHECK(vkCreateFence(m_device, &fenceInfo, nullptr, &fence));
+
+  NVVK_CHECK(vkQueueSubmit(m_queue, 1, &submitInfo, fence));
+  NVVK_CHECK(vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX));
+
+  vkDestroyFence(m_device, fence, nullptr);
+  vkFreeCommandBuffers(m_device, m_commandPool, 1, &cmd);
 }
 
 }  // namespace vk_gaussian_splatting

@@ -28,7 +28,7 @@ VramDataParameters    prmData{};
 RtxVramDataParameters prmRtxData{};
 
 // no reset function on purpose
-uint32_t            prmSelectedPipeline = PIPELINE_MESH;
+uint32_t            prmSelectedPipeline = PIPELINE_VERT;
 shaderio::FrameInfo prmFrame{};
 RenderParameters    prmRender{};
 RasterParameters    prmRaster{};

@@ -24,7 +24,6 @@
 
 #include <glm/glm.hpp>
 
-#include <nvapp/application.hpp>
 #include <nvvk/resource_allocator.hpp>
 #include <nvvk/debug_util.hpp>
 #include <nvvk/staging.hpp>
@@ -48,14 +47,14 @@ public:
 
 public:
   // create and upload the lightset buffer with default light
-  void init(nvapp::Application* app, nvvk::ResourceAllocator* alloc, nvvk::StagingUploader* uploader);
+  void init(nvvk::ResourceAllocator* alloc, nvvk::StagingUploader* uploader);
 
   // free the vulkan buffer and clear the light set
   void deinit();
 
   // update the buffer that stores the list of lights
   // must be invoked after adding/removing light or reseting all lights
-  void updateBuffer();
+  void updateBuffer(VkCommandBuffer cmd);
 
   // return the number of lights in the set
   uint64_t size() { return numLights; }
@@ -94,7 +93,6 @@ public:
   }
 
 private:
-  nvapp::Application*      m_app{};
   nvvk::ResourceAllocator* m_alloc{};
   nvvk::StagingUploader*   m_uploader{};
 };

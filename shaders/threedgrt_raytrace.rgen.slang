@@ -33,17 +33,10 @@
 [[vk::binding(RTX_BINDING_OUTIMAGE, 1)]] RWTexture2D<float4> image;
 [[vk::binding(RTX_BINDING_AUX1, 1)]] RWTexture2D<float4> imageAux;
 [[vk::binding(RTX_BINDING_OUTDEPTH, 1)]] RWTexture2D<float> depthBuffer;
-#if RTX_USE_MESHES
-[[vk::binding(RTX_BINDING_TLAS_MESH, 1)]] RaytracingAccelerationStructure topLevelASMesh;
-#endif
 [[vk::binding(BINDING_FRAME_INFO_UBO, 0)]] ConstantBuffer<FrameInfo> frameInfo;
 [[vk::push_constant]] ConstantBuffer<PushConstantRay> pcRay;
 // TODO to be removed, just for debug readback
 [[vk::binding(BINDING_INDIRECT_BUFFER, 0)]] RWStructuredBuffer<IndirectParams> indirectBuffer;
-#if RTX_USE_MESHES
-[[vk::binding(BINDING_MESH_DESCRIPTORS, 0)]] StructuredBuffer<ObjDesc> objDesc;
-[[vk::binding(BINDING_LIGHT_SET, 0)]] StructuredBuffer<LightSource> lights;
-#endif
 // clang-format on
 
 double maxComponent(in double3 v)
@@ -72,7 +65,7 @@ void main()
 #endif
 
   // add Depth-of-Field perturbation to the ray
-#if((PIPELINE != PIPELINE_HYBRID) && RTX_DOF_ENABLED)
+#if(RTX_DOF_ENABLED)
   // Initialize the random number
   uint seed = xxhash32(uint3(launchID, frameInfo.frameSampleId));
 
@@ -127,92 +120,7 @@ void main()
     // trace the mesh with one closest hit if meshes are activated
     float meshHitDist = PAYLOAD_INF_DISTANCE;
 
-#if RTX_USE_MESHES
 
-    float3 meshHitWorldPos;
-    float3 meshHitWorldNrm;
-    int    meshHitObjId;
-    int    meshHitMatId;
-
-    payload.dist[0] = PAYLOAD_INF_DISTANCE;
-    payload.id[0]   = PAYLOAD_INVALID_ID;
-    payload.id[1]   = PAYLOAD_INVALID_ID;
-
-// #define USE_SER
-#ifdef USE_SER
-    hitObjectNV hObj;
-    hitObjectRecordEmptyNV(hObj);
-    hitObjectTraceRayNV(hObj,                       // the hitObject instance
-                        topLevelASMesh,             // acceleration structure
-                        rayFlagsMesh,               // rayFlags
-                        0xFF,                       // cullMask
-                        0,                          // sbtRecordOffset
-                        0,                          // sbtRecordStride
-                        0,                          // missIndex
-                        rayOrigin,                  // ray origin
-                        rayLastHitDistance + epsT,  // ray min range
-                        rayDirection,               // ray direction
-                        tMax + epsT,                // ray max range
-                        0                           // payload (location = 0)
-    );
-    reorderThreadNV(hObj);
-    hitObjectExecuteShaderNV(hObj, 0);
-#else
-    RayDesc rayMesh;
-    rayMesh.Origin    = rayOrigin;
-    rayMesh.Direction = rayDirection;
-    rayMesh.TMin      = rayLastHitDistance + epsT;
-    rayMesh.TMax      = tMax + epsT;
-
-    TraceRay(topLevelASMesh,  // acceleration structure
-             rayFlagsMesh,    // rayFlags
-             0xFF,            // cullMask
-             0,               // sbtRecordOffset
-             0,               // sbtRecordStride
-             0,               // missIndex
-             rayMesh,         // ray
-             payload          // payload (location = 0)
-    );
-#endif
-    meshHitDist = payload.dist[0];
-    //
-    if(meshHitDist < PAYLOAD_INF_DISTANCE)
-    {
-      tMax = meshHitDist;
-      // collect info to compute shading and potential new ray later on
-      meshHitObjId    = payload.id[0];
-      meshHitMatId    = payload.id[1];
-      meshHitWorldPos = float3(payload.dist[1], payload.dist[2], payload.dist[3]);
-      meshHitWorldNrm = float3(payload.dist[4], payload.dist[5], payload.dist[6]);
-      // Early return if meshDepthOnly pre-pass
-      if(pcRay.meshDepthOnly)
-      {
-        const float4 clip = mul(mul(float4(meshHitWorldPos, 1.0), frameInfo.viewMatrix), frameInfo.projectionMatrix);
-        const float3 ndc  = clip.xyz / clip.w;
-        depthBuffer[launchID] = ndc.z;
-        // clear image buffer
-        if(frameInfo.frameSampleId <= 0)  // < 0 means temporal sampling off, 0 means first frame
-          image[launchID] = float4(0.0, 0.0, 0.0, 1.0);
-        else
-          imageAux[launchID] = float4(0.0, 0.0, 0.0, 1.0);
-        return;
-      }
-      //
-      if(bounce == 0)
-        meshHit = true;
-    }
-    else if(pcRay.meshDepthOnly)
-    {
-      // Early return if meshDepthOnly pre-pass
-      depthBuffer[launchID] = 1.0;
-      // clear image buffer
-      if(frameInfo.frameSampleId <= 0)  // < 0 means temporal sampling off, 0 means first frame
-        image[launchID] = float4(0.0, 0.0, 0.0, 1.0);
-      else
-        imageAux[launchID] = float4(0.0, 0.0, 0.0, 1.0);
-      return;
-    }
-#endif
 
     // when hybrid is enabled, we trace the particles only for secondary rays
 #if HYBRID_ENABLED
