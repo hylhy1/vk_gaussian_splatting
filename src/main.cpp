@@ -58,26 +58,19 @@ int main(int argc, char** argv)
 
   // The GaussianSplattingUI includes the core GaussianSplatting class by inheritance
   auto gaussianSplatting = std::make_shared<GaussianSplatting>(&profilerManager, &parameterRegistry);
-
-  // add a few more parameters to registry and parser to handle sequencer settings
-  sequencerInfo.registerScriptParameters(parameterRegistry, parameterParser);
-
+  //sequencerInfo.registerScriptParameters(parameterRegistry, parameterParser);
   // extends reporting output with memory consumption information
-  sequencerInfo.postCallbacks.emplace_back(
-      [&](const nvutils::ParameterSequencer::State& /* unused */) { gaussianSplatting->benchmarkAdvance(); });
-
   // After the creation of the elements we have more parameters in the registry than before (from gaussianSplatting).
   // Therefore add the entire registry to the commandline parser again, to add new ones.
   parameterParser.add(parameterRegistry);
   // commandline parsing
   parameterParser.parse(argc, argv);
-  // backup the default applications parameters, including those modified by command line
   storeDefaultParameters();
   // set more verbose for benchmark usage later on
   parameterParser.setVerbose(true);
 
   // this element requires sequencerInfo that is potentially updated by parameterParser
-  auto elemSequencer = std::make_shared<nvapp::ElementSequencer>(sequencerInfo);
+  //auto elemSequencer = std::make_shared<nvapp::ElementSequencer>(sequencerInfo);
 
   /////////////////////////////////
   // Vulkan creation context information
@@ -153,16 +146,12 @@ int main(int argc, char** argv)
   // Initializes the application
   application.init(appInfo);
 
-  // Add all application elements including our sample specific gaussianSplatting
-  // onAttach will be invoked on elements at this stage
-  application.addElement(elemSequencer);
   application.addElement(gaussianSplatting);
 
   auto elemCamera = std::make_shared<nvapp::ElementCamera>();
   elemCamera->setCameraManipulator(gaussianSplatting->cameraManip);
   application.addElement(elemCamera);
   application.setVsync(true);
-
   application.run();
 
   // Cleanup

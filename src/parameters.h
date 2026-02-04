@@ -94,7 +94,7 @@ extern RenderParameters prmRender;
 // Parameters that control rasterization
 struct RasterParameters
 {
-  int32_t sortingMethod           = SORTING_GPU_SYNC_RADIX;
+  int32_t sortingMethod           = SORTING_CPU_ASYNC_MONO;
   bool    cpuLazySort             = true;  // if true, sorting starts only if viewpoint changed
   int     frustumCulling          = FRUSTUM_CULLING_AT_DIST;
   int     distShaderWorkgroupSize = 256;  // best default value set by experimentation on ADA6000

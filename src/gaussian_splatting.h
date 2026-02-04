@@ -99,11 +99,6 @@ namespace vk_gaussian_splatting {
 class GaussianSplatting : public nvapp::IAppElement
 {
 public:
-  // Benchmarking, print extended info
-  // invoked by parameter sequencer
-  void benchmarkAdvance();
-
-public:
   // Camera manipulator
   // public so that it can be accessed by main
   std::shared_ptr<nvutils::CameraManipulator> cameraManip{};
@@ -183,39 +178,8 @@ private:
 
   void tryConsumeAndUploadCpuSortingResult(VkCommandBuffer cmd, const uint32_t splatCount);
 
-  void processSortingOnGPU(VkCommandBuffer cmd, const uint32_t splatCount);
-
   void drawSplatPrimitives(VkCommandBuffer cmd, const uint32_t splatCount);
 
-  void drawMeshPrimitives(VkCommandBuffer cmd);
-
-  // for statistics display in the UI
-  // copy form m_indirectReadbackHost updated at previous frame to m_indirectReadback
-  void collectReadBackValuesIfNeeded(void);
-  // for statistics display in the UI
-  // read back updated indirect parameters from m_indirect into m_indirectReadbackHost
-  void readBackIndirectParametersIfNeeded(VkCommandBuffer cmd);
-
-  void updateRenderingMemoryStatistics(VkCommandBuffer cmd, const uint32_t splatCount);
-
-  //////////////
-  // RTX specific
-
-  // updates the frame counter and returns true if a new raytracing pass is needed
-  bool updateFrameCounter();
-
-  void initRtDescriptorSet();
-  void updateRtDescriptorSet();
-  void initRtPipeline();
-  void raytrace(const VkCommandBuffer& cmdBuf, bool meshDepthOnly = false);
-
-  //////////////
-  // Post processing
-
-  void initDescriptorSetPostProcessing();
-  void updateDescriptorSetPostProcessing();
-  void initPipelinePostProcessing();
-  void postProcess(VkCommandBuffer cmd);
 
 protected:
   // name of the loaded scene if load is successfull
@@ -242,9 +206,6 @@ protected:
   // Push constant for rasterizer
   shaderio::PushConstant m_pcRaster{};
 
-  // counting benchmark steps
-  int m_benchmarkId = 0;
-
   // trigger a rebuild of the data in VRAM (textures or buffers) at next frame
   // also triggers shaders and pipeline rebuild
   bool m_requestUpdateSplatData = false;
@@ -262,6 +223,7 @@ protected:
   bool m_requestDeleteSelectedMesh = false;
 
   nvapp::Application*         m_app{nullptr};
+
   nvutils::ProfilerManager*   m_profilerManager;
   nvutils::ParameterRegistry* m_parameterRegistry;
   nvvk::StagingUploader       m_uploader{};     // utility to upload buffers to device
@@ -306,13 +268,11 @@ protected:
 
   SplatSorterAsync      m_cpuSorter;                   // CPU async sorting
   std::vector<uint32_t> m_splatIndices;                // the array of cpu sorted indices to use for rendering
-  VrdxSorter            m_gpuSorter = VK_NULL_HANDLE;  // GPU radix sort
 
   // buffers used by GPU and/or CPU sort
   nvvk::Buffer m_splatIndicesHost;      // Buffer of splat indices on host for transfers (used by CPU sort)
   nvvk::Buffer m_splatIndicesDevice;    // Buffer of splat indices on device (used by CPU and GPU sort)
   nvvk::Buffer m_splatDistancesDevice;  // Buffer of splat indices on device (used by CPU and GPU sort)
-  nvvk::Buffer m_vrdxStorageDevice;     // Used internally by VrdxSorter, GPU sort
 
   // macro definitions shared by all shaders
   std::vector<std::pair<std::string, std::string>> m_shaderMacros;
@@ -323,24 +283,8 @@ protected:
   struct Shaders
   {
     // 3D Gaussians Raster
-    VkShaderModule distShader{};
-    VkShaderModule meshShader{};
     VkShaderModule vertexShader{};
     VkShaderModule fragmentShader{};
-    VkShaderModule threedgutMeshShader{};
-    VkShaderModule threedgutFragmentShader{};
-    // 3D Meshes raster
-    VkShaderModule meshVertexShader{};
-    VkShaderModule meshFragmentShader{};
-    // for RTX
-    VkShaderModule rtxRgenShader{};    // The ray generator
-    VkShaderModule rtxRmissShader{};   // The miss shader
-    VkShaderModule rtxRmiss2Shader{};  // For shadows (no support yet)
-    VkShaderModule rtxRchitShader{};   // Closest Hit
-    VkShaderModule rtxRahitShader{};   // Any Hit
-    VkShaderModule rtxRintShader{};    // Interrsection
-    // Post processings
-    VkShaderModule postComputeShader{};
     // Utility storage to process shaders in loop
     std::vector<VkShaderModule*> modules{};
     // true if all the shaders are succesfully build
@@ -348,12 +292,7 @@ protected:
   } m_shaders;
 
   // 3D Gaussians Pipelines
-  VkPipeline m_computePipelineGsDistCull = VK_NULL_HANDLE;  // The compute pipeline to compute gaussian splats distances to eye and cull
   VkPipeline m_graphicsPipelineGsVert = VK_NULL_HANDLE;  // The graphic pipeline to rasterize gaussian splats using vertex shaders
-  VkPipeline m_graphicsPipelineGsMesh = VK_NULL_HANDLE;  // The graphic pipeline to rasterize gaussian splats using mesh shaders
-  VkPipeline m_graphicsPipeline3dgutMesh = VK_NULL_HANDLE;  // The graphic pipeline to rasterize 3DGUT splats using mesh shaders
-  // 3D Meshes Pipelines
-  VkPipeline m_graphicsPipelineMesh = VK_NULL_HANDLE;  // The graphic pipeline to rasterize meshes
 
   // Common to 3D meshes and 3D Gaussians pipeline
   VkPipelineLayout      m_pipelineLayout      = VK_NULL_HANDLE;  // Raster Pipelines layout
@@ -363,75 +302,6 @@ protected:
 
   nvvk::Buffer m_frameInfoBuffer;  // uniform buffer to store frame parameters defined by global variable prmFrame
 
-  // Rendering (sorting and splatting) related memory usage statistics
-  struct RenderMemoryStats
-  {
-    // Rasterization
-
-    uint64_t usedUboFrameInfo = 0;  // used = alloc all the time
-    uint64_t usedIndirect     = 0;  // used = alloc all the time, for the active pipeline
-
-    uint64_t hostAllocDistances = 0;  // used = alloc
-    uint64_t hostAllocIndices   = 0;  // used = alloc
-
-    uint64_t allocIndices      = 0;
-    uint64_t usedIndices       = 0;
-    uint64_t allocDistances    = 0;
-    uint64_t usedDistances     = 0;
-    uint64_t allocVdrxInternal = 0;  // used is unknown
-
-    uint64_t rasterHostTotal        = 0;
-    uint64_t rasterDeviceUsedTotal  = 0;
-    uint64_t rasterDeviceAllocTotal = 0;
-
-    // RTX
-    uint64_t rtxUsedTlas = 0;
-    uint64_t rtxUsedBlas = 0;
-
-    uint64_t rtxHostTotal        = 0;
-    uint64_t rtxDeviceUsedTotal  = 0;
-    uint64_t rtxDeviceAllocTotal = 0;
-
-    // Totals
-    uint64_t hostTotal        = 0;
-    uint64_t deviceUsedTotal  = 0;
-    uint64_t deviceAllocTotal = 0;
-
-  } m_renderMemoryStats;
-
-  /////////////////////////
-  // RTX specific
-
-  VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
-  VkPhysicalDeviceAccelerationStructurePropertiesKHR m_accelStructProps{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-
-  std::vector<VkRayTracingShaderGroupCreateInfoKHR> m_rtShaderGroups;
-  VkPipelineLayout                                  m_rtPipelineLayout = VK_NULL_HANDLE;
-  VkPipeline m_rtPipeline = VK_NULL_HANDLE;  // The RTX pipeline to ray trace gaussian splats and meshes
-
-  nvvk::DescriptorBindings m_rtDescriptorBindings  = {};
-  VkDescriptorSetLayout    m_rtDescriptorSetLayout = VK_NULL_HANDLE;
-  VkDescriptorSet          m_rtDescriptorSet       = VK_NULL_HANDLE;
-  VkDescriptorPool         m_rtDescriptorPool      = VK_NULL_HANDLE;
-
-  nvvk::Buffer m_payloadDevice;
-
-  nvvk::Buffer m_rtSBTBuffer;  // common to GS and Mesh
-  // The 4 SBT regions (raygen, miss, chit, call in this order)
-  nvvk::SBTGenerator::Regions m_sbtRegions{};  // common to GS and Mesh
-
-  shaderio::PushConstantRay m_pcRay{};  // Push constant for ray tracer
-
-  ///////////////////////////////
-  // Post processing
-
-  VkPipeline       m_computePipelinePostProcess = VK_NULL_HANDLE;
-  VkPipelineLayout m_pipelineLayoutPostProcess  = VK_NULL_HANDLE;
-
-  nvvk::DescriptorBindings m_descriptorBindingsPostProcess{};
-  VkDescriptorSetLayout    m_descriptorSetLayoutPostProcess = VK_NULL_HANDLE;
-  VkDescriptorSet          m_descriptorSetPostProcess       = VK_NULL_HANDLE;
-  VkDescriptorPool         m_descriptorPoolPostProcess      = VK_NULL_HANDLE;
 };
 
 }  // namespace vk_gaussian_splatting

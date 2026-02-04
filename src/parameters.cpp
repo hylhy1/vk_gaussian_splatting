@@ -82,31 +82,7 @@ void resetRtxParameters()
 
 void registerCommandLineParameters(nvutils::ParameterRegistry* parameterRegistry)
 {
-  // Scene
-  parameterRegistry->add({"inputFile", "load a ply or an spz file"}, {".ply", ".spz"}, &prmScene.sceneToLoadFilename);
-#ifdef WITH_DEFAULT_SCENE_FEATURE
-  parameterRegistry->add({"loadDefaultScene", "0=disable the load of a default scene when no ply file is provided"},
-                         &prmScene.enableDefaultScene);
-#endif
-  // Projects
-  parameterRegistry->add({"inputProject", "load a vkgs project file"}, {".vkgs"}, &prmScene.projectToLoadFilename);
-
-  // Data
-  parameterRegistry->add({"shformat", "0=fp32 1=fp16 2=uint8"}, &prmData.shFormat);
-  parameterRegistry->add({"useAABBs", "0=use icosahedron 3D mesh and built-in triangle/ray intersection (Default), 1=use AABBs and parametric intersection shader. DO NOT COMBINE with useTlasInstances=0."},
-                         &prmRtxData.useAABBs);
-  parameterRegistry->add({"useTlasInstances", "1=use one TLAS instance per particle and a small unit particle BLAS (default). 0=use one TLAS entry and a large BLAS."},
-                         &prmRtxData.useTlasInstances);
-  parameterRegistry->add({"compressBlas", "1=compress BLAS (default). 0=diabled."}, &prmRtxData.compressBlas);
-
-  // Pipelines
-  parameterRegistry->add({"pipeline", "0=3dgs-vert 1=3dgs-mesh(default) 2=3dgrt 3=hybrid-3dgs 4=3dgut 5=hybrid-3dgut"},
-                         &prmSelectedPipeline);
-  parameterRegistry->add({"maxShDegree", "max sh degree used for rendering in [0,1,2,3]"}, &prmRender.maxShDegree);
-  parameterRegistry->add({"extentProjection", "particle extent projection method [0=Eigen (default),1=Conic]"},
-                         &prmRaster.extentProjection);
-  parameterRegistry->add({"kernelDegree", "kernel degree used by 3DGRT, 3DGUT and Hybrid 3DGUT pipelines in [0,1,2(default),3,4,5]"},
-                         &prmRtx.kernelDegree);
+  
 }
 
 }  // namespace vk_gaussian_splatting

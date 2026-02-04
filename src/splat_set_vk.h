@@ -55,8 +55,7 @@ public:
             nvvk::ResourceAllocator*                            alloc,
             nvvk::StagingUploader*                              uploader,
             VkSampler*                                          sampler,
-            nvvk::PhysicalDeviceInfo*                           deviceInfo,
-            VkPhysicalDeviceAccelerationStructurePropertiesKHR* accelStructProps)
+            nvvk::PhysicalDeviceInfo*                           deviceInfo)
   {
     m_device      = device;
     m_queueInfo   = queueInfo;
@@ -99,26 +98,6 @@ public:
   // destroy all buffers from VRAM
   // a new initDataStorage can be invoked afterward
   void deinitDataStorage();
-
-  // initDataStorage must be invoked prior to creation of the splat model
-  void rtxInitSplatModel(SplatSet& splatSet, bool useInstances, bool useAABBs, bool compressBlas, int kernelDegree, float kernelMinResponse, bool kernelAdaptiveClamping);
-
-  void rtxDeinitSplatModel()
-  {
-    m_alloc->destroyBuffer(m_splatModel.vertexBuffer);
-    m_alloc->destroyBuffer(m_splatModel.indexBuffer);
-    m_alloc->destroyBuffer(m_splatModel.aabbBuffer);
-    rtxValid = false;
-  }
-
-  // rtxInitSplatModel must be invoked prior to creation of acceleration structure
-  void rtxInitAccelerationStructures(SplatSet& splatSet);
-
-  void rtxDeinitAccelerationStructures()
-  {
-    rtAccelerationStructures.deinitAccelerationStructures();
-    rtxValid = false;
-  }
 
   // reset the memory usage stats
   inline void resetMemoryStats() { memoryStats = {}; }
@@ -250,18 +229,6 @@ private:
   // Helper methods for command buffer management
   VkCommandBuffer createTempCmdBuffer();
   void submitAndWaitTempCmdBuffer(VkCommandBuffer cmd);
-
-private:
-  // RTX specifics
-
-  void rtxCreateSplatIcosahedron(std::vector<glm::vec3>& vertices,
-                                 std::vector<uint32_t>&  indices,
-                                 std::vector<SplatAabb>& aabbs,
-                                 glm::mat4               transform = glm::mat4(1.0));
-
-  glm::mat4 rtxComputeTransformMatrix(SplatSet& splatSet, uint64_t splatIdx);
-
-  nvvk::AccelerationStructureGeometryInfo rtxCreateSplatModelAccelerationStructureGeometryInfo();
 
 private:
   uint32_t m_storage{};
