@@ -104,15 +104,11 @@ source_group("Extern Files" FILES ${EXTERN_FILES})
 # Linking with other libraries
 # Link libraries and include directories
 target_link_libraries(${PROJECT_NAME} PRIVATE
-  nvpro2::nvapp
-  nvpro2::nvgui
-  nvpro2::nvvkglsl
+  
   nvpro2::nvslang
-  nvpro2::nvshaders_host
   nvpro2::nvutils
   nvpro2::nvvk
-  nvpro2::nvgpu_monitor
-  vk_radix_sort
+  glfw
   spz::spz
 )
 

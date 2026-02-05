@@ -453,6 +453,9 @@ void SplatSetVk::initDataBuffers(SplatSet& splatSet)
 
 void SplatSetVk::deinitDataBuffers()
 {
+  // 等待GPU操作完成
+  vkDeviceWaitIdle(m_device);
+  
   m_alloc->destroyBuffer(centersBuffer);
   m_alloc->destroyBuffer(scalesBuffer);
   m_alloc->destroyBuffer(rotationsBuffer);

@@ -39,9 +39,8 @@
 
 namespace vk_gaussian_splatting {
 
-GaussianSplatting::GaussianSplatting(nvutils::ProfilerManager* profilerManager, nvutils::ParameterRegistry* parameterRegistry)
-    : m_profilerManager(profilerManager)
-    , m_parameterRegistry(parameterRegistry)
+GaussianSplatting::GaussianSplatting(nvutils::ProfilerManager* /*profilerManager*/, nvutils::ParameterRegistry* parameterRegistry)
+    : m_parameterRegistry(parameterRegistry)
     , cameraManip(std::make_shared<nvutils::CameraManipulator>()) {
 
     };
@@ -52,26 +51,22 @@ GaussianSplatting::~GaussianSplatting(){
     // could be done here, same result
 };
 
-void GaussianSplatting::onAttach(nvapp::Application* app)
+void GaussianSplatting::onAttach(VulkanContext* vkContext)
 {
-  // shortcuts
-  m_app    = app;
-  m_device = m_app->getDevice();
+  m_vkContext = vkContext;
 
-  // profiling
-  m_profilerTimeline = m_profilerManager->createTimeline({.name = "Primary Timeline"});
-  m_profilerGpuTimer.init(m_profilerTimeline, m_app->getDevice(), m_app->getPhysicalDevice(), m_app->getQueue(0).familyIndex, false);
+  m_device = m_vkContext->getDevice();
 
   // starts the asynchronous services
   m_plyLoader.initialize();
-  m_cpuSorter.initialize(m_profilerTimeline);
+  m_cpuSorter.initialize(nullptr);
 
   // Memory allocator
   m_alloc.init(VmaAllocatorCreateInfo{
       .flags            = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
-      .physicalDevice   = app->getPhysicalDevice(),
-      .device           = app->getDevice(),
-      .instance         = app->getInstance(),
+      .physicalDevice   = m_vkContext->getPhysicalDevice(),
+      .device           = m_vkContext->getDevice(),
+      .instance         = m_vkContext->getInstance(),
       .vulkanApiVersion = VK_API_VERSION_1_4,
   });
 
@@ -82,12 +77,12 @@ void GaussianSplatting::onAttach(nvapp::Application* app)
   m_uploader.init(&m_alloc, true);
 
   // Acquiring the sampler which will be used for displaying the GBuffer and accessing textures
-  m_samplerPool.init(app->getDevice());
+  m_samplerPool.init(m_vkContext->getDevice());
   NVVK_CHECK(m_samplerPool.acquireSampler(m_sampler));
   NVVK_DBG_NAME(m_sampler);
 
   // GBuffer
-  m_depthFormat = nvvk::findDepthFormat(app->getPhysicalDevice());
+  m_depthFormat = nvvk::findDepthFormat(m_vkContext->getPhysicalDevice());
 
   // Two GBuffer color attachments, the second one is used only when temporal sampling with 3DGUT
   m_gBuffers.init({
@@ -95,7 +90,7 @@ void GaussianSplatting::onAttach(nvapp::Application* app)
       .colorFormats   = {m_colorFormat, m_colorFormat},
       .depthFormat    = m_depthFormat,
       .imageSampler   = m_sampler,
-      .descriptorPool = m_app->getTextureDescriptorPool(),
+      .descriptorPool = m_vkContext->getTextureDescriptorPool(),
   });
 
   // Setting up the Slang compiler
@@ -113,10 +108,10 @@ void GaussianSplatting::onAttach(nvapp::Application* app)
   }
 
   // Get device information
-  m_physicalDeviceInfo.init(m_app->getPhysicalDevice(), VK_API_VERSION_1_4);
+  m_physicalDeviceInfo.init(m_vkContext->getPhysicalDevice(), VK_API_VERSION_1_4);
 
   // init the Vulkan splatSet and the mesh set for mesh compositing
-  m_splatSetVk.init(m_device, m_app->getQueue(0), m_app->getCommandPool(), &m_alloc, &m_uploader, &m_sampler, &m_physicalDeviceInfo);
+  m_splatSetVk.init(m_device, m_vkContext->getQueue(0), m_vkContext->getCommandPool(), &m_alloc, &m_uploader, &m_sampler, &m_physicalDeviceInfo);
 
   m_cameraSet.init(cameraManip.get());
 };
@@ -131,26 +126,81 @@ void GaussianSplatting::onDetach()
   // release application wide related resources
   m_splatSetVk.deinit();
 
-  m_profilerGpuTimer.deinit();
-  m_profilerManager->destroyTimeline(m_profilerTimeline);
-  m_profilerTimeline = nullptr;
+  
   m_gBuffers.deinit();
   m_samplerPool.releaseSampler(m_sampler);
   m_samplerPool.deinit();
   m_uploader.deinit();
   m_alloc.deinit();
+
+  m_vkContext = nullptr;
 }
 
 void GaussianSplatting::onResize(VkCommandBuffer cmd, const VkExtent2D& viewportSize)
 {
   m_viewSize = {viewportSize.width, viewportSize.height};
+  m_vkContext->setViewportSize(viewportSize);
   NVVK_CHECK(m_gBuffers.update(cmd, viewportSize));
   resetFrameCounter();
 }
 
 void GaussianSplatting::onPreRender()
 {
-  m_profilerTimeline->frameAdvance();
+  if(prmScene.enableDefaultScene && m_loadedSceneFilename.empty() && prmScene.sceneToLoadFilename.empty()
+     && m_plyLoader.getStatus() == PlyLoaderAsync::State::E_READY)
+  {
+    const std::vector<std::filesystem::path> defaultSearchPaths = getResourcesDirs();
+    prmScene.sceneToLoadFilename = nvutils::findFile("flowers_1/flowers_1.ply", defaultSearchPaths).string();
+    prmScene.enableDefaultScene  = false;
+  }
+  // do we need to load a new scene ?
+  if(!prmScene.sceneToLoadFilename.empty() && m_plyLoader.getStatus() == PlyLoaderAsync::State::E_READY)
+  {
+
+    if(!m_loadedSceneFilename.empty() && prmScene.projectToLoadFilename.empty())
+    {
+    }
+    bool doReset = true;
+    if(doReset)
+    {
+      // reset if a scene already exists
+      const auto splatCount = m_splatSet.positions.size() / 3;
+      if(splatCount)
+      {
+        deinitAll();
+      }
+
+      m_loadedSceneFilename = prmScene.sceneToLoadFilename;
+      //
+      vkDeviceWaitIdle(m_device);
+
+      std::cout << "Start loading file " << prmScene.sceneToLoadFilename << std::endl;
+      if(!m_plyLoader.loadScene(prmScene.sceneToLoadFilename, m_splatSet))
+      {
+        // this should never occur since status is READY.
+        std::cout << "Error: cannot start scene load while loader is not ready status=" << m_plyLoader.getStatus() << std::endl;
+      }
+      prmScene.sceneToLoadFilename.clear();
+    }
+  }
+  while(m_plyLoader.getStatus() == PlyLoaderAsync::State::E_LOADING)
+  {
+    using namespace std::chrono_literals;
+    std::this_thread::sleep_for(100ms);
+  }
+  switch(m_plyLoader.getStatus())
+  {
+    case PlyLoaderAsync::State::E_LOADED: {
+      if(!initAll())
+      {
+        deinitScene();
+      }
+      m_plyLoader.reset();
+    }
+    break;
+    default: {
+    }
+  }
 }
 
 void GaussianSplatting::onRender(VkCommandBuffer cmd)
@@ -187,9 +237,9 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
 
   // Drawing the primitives in the G-Buffer
   {
-    auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Rasterization");
+    //auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Rasterization");
 
-    const VkExtent2D& viewportSize = m_app->getViewportSize();
+    const VkExtent2D& viewportSize = m_vkContext->getViewportSize();
     const VkViewport  viewport{0.0F, 0.0F, float(viewportSize.width), float(viewportSize.height), 0.0F, 1.0F};
     const VkRect2D    scissor{{0, 0}, viewportSize};
 
@@ -239,126 +289,12 @@ void GaussianSplatting::onRender(VkCommandBuffer cmd)
   }
 }
 
-void GaussianSplatting::onUIRender() {
-  /////////////
-  // Rendering Viewport display the GBuffer
-  {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
-    ImGui::Begin("Viewport");
-    ImGui::Image((ImTextureID)m_gBuffers.getDescriptorSet(), ImGui::GetContentRegionAvail());
-
-    ImVec2 wp              = ImGui::GetWindowPos();
-    ImVec2 ws              = ImGui::GetWindowSize();
-    ImVec2 mp              = ImGui::GetMousePos();
-    ImVec2 mouseInViewport = ImVec2(mp.x - wp.x, mp.y - wp.y);
-    if(mouseInViewport.x < 0 || mouseInViewport.y < 0 || mouseInViewport.x >= ws.x || mouseInViewport.y >= ws.y)
-      prmFrame.cursor.x = prmFrame.cursor.y = -1;  // just so it is easy to test in shader if pos is valid
-    else
-      prmFrame.cursor = {mouseInViewport.x, mouseInViewport.y};
-
-    ImGui::End();
-    ImGui::PopStyleVar();
-  }
-  if(prmScene.enableDefaultScene && m_loadedSceneFilename.empty() && prmScene.sceneToLoadFilename.empty()
-     && m_plyLoader.getStatus() == PlyLoaderAsync::State::E_READY)
-  {
-    const std::vector<std::filesystem::path> defaultSearchPaths = getResourcesDirs();
-    prmScene.sceneToLoadFilename = nvutils::findFile("flowers_1/flowers_1.ply", defaultSearchPaths).string();
-    prmScene.enableDefaultScene  = false;
-  }
-  // do we need to load a new scene ?
-  if(!prmScene.sceneToLoadFilename.empty() && m_plyLoader.getStatus() == PlyLoaderAsync::State::E_READY)
-  {
-
-    if(!m_loadedSceneFilename.empty() && prmScene.projectToLoadFilename.empty())
-      ImGui::OpenPopup("Load .ply file ?");
-
-    // Always center this window when appearing
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-
-    bool doReset = true;
-
-    if(ImGui::BeginPopupModal("Load .ply file ?", NULL, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-      doReset = false;
-
-      ImGui::Text("The current project will be entirely replaced.\nThis operation cannot be undone!");
-      ImGui::Separator();
-
-      if(ImGui::Button("OK", ImVec2(120, 0)))
-      {
-        doReset = true;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SetItemDefaultFocus();
-      ImGui::SameLine();
-      if(ImGui::Button("Cancel", ImVec2(120, 0)))
-      {
-        // cancel any request leading to a reset
-        prmScene.sceneToLoadFilename   = "";
-        prmScene.projectToLoadFilename = "";
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    }
-
-    if(doReset)
-    {
-      // reset if a scene already exists
-      const auto splatCount = m_splatSet.positions.size() / 3;
-      if(splatCount)
-      {
-        deinitAll();
-      }
-
-      m_loadedSceneFilename = prmScene.sceneToLoadFilename;
-      //
-      vkDeviceWaitIdle(m_device);
-
-      std::cout << "Start loading file " << prmScene.sceneToLoadFilename << std::endl;
-      if(!m_plyLoader.loadScene(prmScene.sceneToLoadFilename, m_splatSet))
-      {
-        // this should never occur since status is READY.
-        std::cout << "Error: cannot start scene load while loader is not ready status=" << m_plyLoader.getStatus() << std::endl;
-      }
-      else
-      {
-      }
-
-      // reset request
-      prmScene.sceneToLoadFilename.clear();
-    }
-  }
-  while(m_plyLoader.getStatus() == PlyLoaderAsync::State::E_LOADING)
-  {
-    using namespace std::chrono_literals;
-    std::this_thread::sleep_for(100ms);
-  }
-  switch(m_plyLoader.getStatus())
-  {
-    case PlyLoaderAsync::State::E_LOADED: {
-      if(!initAll())
-      {
-        deinitScene();
-      }
-      m_plyLoader.reset();
-    }
-    break;
-    default: {
-    }
-  }
-}
-
 void GaussianSplatting::processUpdateRequests(VkCommandBuffer cmd)
 {
 
   // Automatic and Sanity settings depending in pipeline
-  if(1)
-  {
-    prmRtx.temporalSampling = false;
-    // prmRtx.dofEnabled       = false;
-  }
+
+  prmRtx.temporalSampling = false;
 
   bool needUpdate = m_requestUpdateSplatData || m_requestUpdateSplatAs || m_requestUpdateMeshData
                     || m_requestUpdateShaders || m_requestUpdateLightsBuffer || m_requestDeleteSelectedMesh;
@@ -382,15 +318,10 @@ void GaussianSplatting::processUpdateRequests(VkCommandBuffer cmd)
       m_splatSetVk.deinitDataStorage();
       m_splatSetVk.initDataStorage(m_splatSet, prmData.dataStorage, prmData.shFormat);
     }
-    if(m_requestUpdateSplatData || m_requestUpdateSplatAs)
-    {
-    }
-
     if(m_requestUpdateMeshData || m_requestDeleteSelectedMesh)
     {
       if(m_requestDeleteSelectedMesh)
       {
-
         m_selectedItemIndex = -1;
       }
     }
@@ -418,7 +349,7 @@ void GaussianSplatting::updateAndUploadFrameInfoUBO(VkCommandBuffer cmd, const u
 {
   NVVK_DBG_SCOPE(cmd);
 
-  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "UBO update");
+  //auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "UBO update");
 
   Camera camera = m_cameraSet.getCamera();
 
@@ -530,7 +461,7 @@ void GaussianSplatting::tryConsumeAndUploadCpuSortingResult(VkCommandBuffer cmd,
 
   // 2. upload to GPU is needed
   {
-    auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Copy indices to GPU");
+    //auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Copy indices to GPU");
 
     if(newIndexAvailable)
     {
@@ -977,7 +908,7 @@ void GaussianSplatting::initRendererBuffers()
   NVVK_DBG_NAME(m_indirectReadbackHost.buffer);
 
   // We create a command buffer in order to perform the copy to VRAM
-  VkCommandBuffer cmd = m_app->createTempCmdBuffer();
+  VkCommandBuffer cmd = m_vkContext->createTempCmdBuffer();
 
   // The Quad
   const std::vector<uint16_t> indices  = {0, 2, 1, 2, 0, 3};
@@ -995,7 +926,7 @@ void GaussianSplatting::initRendererBuffers()
   // buffers are small so we use vkCmdUpdateBuffer for the transfers
   vkCmdUpdateBuffer(cmd, m_quadVertices.buffer, 0, vertices.size() * sizeof(float), vertices.data());
   vkCmdUpdateBuffer(cmd, m_quadIndices.buffer, 0, indices.size() * sizeof(uint16_t), indices.data());
-  m_app->submitAndWaitTempCmdBuffer(cmd);
+  m_vkContext->submitAndWaitTempCmdBuffer(cmd);
 
   // Uniform buffer
   m_alloc.createBuffer(m_frameInfoBuffer, sizeof(shaderio::FrameInfo),

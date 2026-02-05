@@ -26,9 +26,6 @@
 #include <chrono>
 #include <filesystem>
 #include <span>
-// Important: include Igmlui before Vulkan
-// Or undef "Status" before including imgui
-#include <imgui/imgui.h>
 //
 #include <vulkan/vulkan_core.h>
 // mathematics
@@ -41,12 +38,14 @@
 #include <thread>
 #include <condition_variable>
 #include <mutex>
-// GPU radix sort
-#include <vk_radix_sort.h>
-//
+
 #include <nvutils/logger.hpp>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/alignment.hpp>
+#include <nvutils/parameter_registry.hpp>
+#include <nvutils/parameter_parser.hpp>
+#include <nvutils/parameter_sequencer.hpp>
+#include <nvutils/camera_manipulator.hpp>
 
 #include <nvvk/context.hpp>
 #include <nvvk/debug_util.hpp>
@@ -65,22 +64,10 @@
 #include <nvvk/descriptors.hpp>
 #include <nvvk/sbt_generator.hpp>
 
-#include <nvvkglsl/glsl.hpp>
+//#include <nvvkglsl/glsl.hpp>
 #include <nvslang/slang.hpp>
 
-#include <nvapp/application.hpp>
-#include <nvapp/elem_camera.hpp>
-#include <nvapp/elem_profiler.hpp>
-#include <nvapp/elem_sequencer.hpp>
-#include <nvapp/elem_default_title.hpp>
-#include <nvapp/elem_default_menu.hpp>
-//
-#include <nvgui/enum_registry.hpp>
-#include <nvgui/property_editor.hpp>
-#include <nvgui/file_dialog.hpp>
-//
-#include <nvgpu_monitor/elem_gpu_monitor.hpp>
-
+#include "vulkan_context.h"
 // Shared between host and device
 #include "shaderio.h"
 
@@ -96,7 +83,7 @@
 
 namespace vk_gaussian_splatting {
 
-class GaussianSplatting : public nvapp::IAppElement
+class GaussianSplatting 
 {
 public:
   // Camera manipulator
@@ -105,26 +92,29 @@ public:
 
   GaussianSplatting(nvutils::ProfilerManager* profilerManager, nvutils::ParameterRegistry* parameterRegistry);
 
-  ~GaussianSplatting() override;
+  ~GaussianSplatting();
 
-  void onAttach(nvapp::Application* app) override;
+  void onAttach(VulkanContext* vkContext) ;
 
-  void onDetach() override;
+  void onDetach();
 
-  void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
+  void onResize(VkCommandBuffer cmd, const VkExtent2D& size);
 
-  void onPreRender() override;
+  void onPreRender();
 
   // reset frame counter for temporal accumulated multi-sampling
   // will cause a restart of the frame construction
   inline void resetFrameCounter() { prmFrame.frameSampleId = -1; }
 
-  void onRender(VkCommandBuffer cmd) override;
+  void onRender(VkCommandBuffer cmd) ;
 
-  void onUIRender() override;
-  //override;
-
-  // reset the rendering settings that can
+  // 获取GBuffer颜色图像（用于复制到交换链）
+  VkImage getGBufferColorImage() const { return m_gBuffers.getColorImage(COLOR_MAIN); }
+  
+  // 获取GBuffer大小
+  VkExtent2D getGBufferSize() const { return m_gBuffers.getSize(); }
+  
+  // reset rendering settings that can
   // be modified by the user interface
   inline void resetRenderSettings()
   {
@@ -180,7 +170,6 @@ private:
 
   void drawSplatPrimitives(VkCommandBuffer cmd, const uint32_t splatCount);
 
-
 protected:
   // name of the loaded scene if load is successfull
   std::filesystem::path m_loadedSceneFilename;
@@ -222,18 +211,14 @@ protected:
   // trigger the deletion of the selected mesh object
   bool m_requestDeleteSelectedMesh = false;
 
-  nvapp::Application*         m_app{nullptr};
+  VulkanContext*              m_vkContext{nullptr};
 
-  nvutils::ProfilerManager*   m_profilerManager;
   nvutils::ParameterRegistry* m_parameterRegistry;
   nvvk::StagingUploader       m_uploader{};     // utility to upload buffers to device
   nvvk::SamplerPool           m_samplerPool{};  // The sampler pool, used to create texture samplers
   VkSampler                   m_sampler{};      // texture sampler (nearest)
   nvvk::ResourceAllocator     m_alloc;
   nvvk::PhysicalDeviceInfo    m_physicalDeviceInfo;
-
-  nvutils::ProfilerTimeline* m_profilerTimeline{};
-  nvvk::ProfilerGpuTimer     m_profilerGpuTimer;
 
   glm::vec2         m_viewSize    = {0, 0};
   VkFormat          m_colorFormat = VK_FORMAT_R8G8B8A8_UNORM;    // Color format of the image

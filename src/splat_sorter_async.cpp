@@ -89,51 +89,84 @@ bool SplatSorterAsync::initialize(nvutils::ProfilerTimeline* profiler)
 
 bool SplatSorterAsync::innerSort()
 {
-  assert(m_profiler);
-
   if(m_positions == nullptr)
     return false;
 
-  auto timer = m_profiler->asyncBeginSection("CPU Dist");
+  if(m_profiler) {
+    auto timer = m_profiler->asyncBeginSection("CPU Dist");
 
-  // we do the sorting if needed
-  // find plane passing through COP and with normal dir.
-  // we use distance to plane instead of distance to COP as an approximation.
-  // https://mathinsight.org/distance_point_plane
-  const glm::vec4 plane(m_sortDir[0], m_sortDir[1], m_sortDir[2],
-                        -m_sortDir[0] * m_sortCop[0] - m_sortDir[1] * m_sortCop[1] - m_sortDir[2] * m_sortCop[2]);
-  const float     divider = 1.0f / std::sqrt(plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]);
+    // we do the sorting if needed
+    // find plane passing through COP and with normal dir.
+    // we use distance to plane instead of distance to COP as an approximation.
+    // https://mathinsight.org/distance_point_plane
+    const glm::vec4 plane(m_sortDir[0], m_sortDir[1], m_sortDir[2],
+                          -m_sortDir[0] * m_sortCop[0] - m_sortDir[1] * m_sortCop[1] - m_sortDir[2] * m_sortCop[2]);
+    const float     divider = 1.0f / std::sqrt(plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]);
 
-  const auto splatCount = (uint32_t)m_positions->size() / 3;
+    const auto splatCount = (uint32_t)m_positions->size() / 3;
 
-  // prepare the arrays (noop if already sized)
-  distances.resize(splatCount);
-  m_indices.resize(splatCount);
+    // prepare the arrays (noop if already sized)
+    distances.resize(splatCount);
+    m_indices.resize(splatCount);
 
-  // compute distances in parallel
-  START_PAR_LOOP(distances.size(), splatIdx)
-  {
-    const glm::vec4 pos =
-        m_transform
-        * glm::vec4((*m_positions)[splatIdx * 3], (*m_positions)[splatIdx * 3 + 1], (*m_positions)[splatIdx * 3 + 2], 1.0f);
-    // distance to plane
-    const float dist    = std::abs(plane[0] * pos[0] + plane[1] * pos[1] + plane[2] * pos[2] + plane[3]) * divider;
-    distances[splatIdx] = dist;
-    m_indices[splatIdx] = (uint32_t)splatIdx;
+    // compute distances in parallel
+    START_PAR_LOOP(distances.size(), splatIdx)
+    {
+      const glm::vec4 pos =
+          m_transform
+          * glm::vec4((*m_positions)[splatIdx * 3], (*m_positions)[splatIdx * 3 + 1], (*m_positions)[splatIdx * 3 + 2], 1.0f);
+      // distance to plane
+      const float dist    = std::abs(plane[0] * pos[0] + plane[1] * pos[1] + plane[2] * pos[2] + plane[3]) * divider;
+      distances[splatIdx] = dist;
+      m_indices[splatIdx] = (uint32_t)splatIdx;
+    }
+    END_PAR_LOOP()
+
+    m_profiler->asyncEndSection(timer);
+
+    timer = m_profiler->asyncBeginSection("CPU Sort");
+
+    // comparison function working on the data <dist,idex>
+    auto compare = [&](size_t i, size_t j) { return distances[i] > distances[j]; };
+
+    // Sorting the array with respect to distance keys
+    std::sort(std::execution::par_unseq, m_indices.begin(), m_indices.end(), compare);
+
+    m_profiler->asyncEndSection(timer);
+  } else {
+    // we do the sorting if needed
+    // find plane passing through COP and with normal dir.
+    // we use distance to plane instead of distance to COP as an approximation.
+    // https://mathinsight.org/distance_point_plane
+    const glm::vec4 plane(m_sortDir[0], m_sortDir[1], m_sortDir[2],
+                          -m_sortDir[0] * m_sortCop[0] - m_sortDir[1] * m_sortCop[1] - m_sortDir[2] * m_sortCop[2]);
+    const float     divider = 1.0f / std::sqrt(plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]);
+
+    const auto splatCount = (uint32_t)m_positions->size() / 3;
+
+    // prepare the arrays (noop if already sized)
+    distances.resize(splatCount);
+    m_indices.resize(splatCount);
+
+    // compute distances in parallel
+    START_PAR_LOOP(distances.size(), splatIdx)
+    {
+      const glm::vec4 pos =
+          m_transform
+          * glm::vec4((*m_positions)[splatIdx * 3], (*m_positions)[splatIdx * 3 + 1], (*m_positions)[splatIdx * 3 + 2], 1.0f);
+      // distance to plane
+      const float dist    = std::abs(plane[0] * pos[0] + plane[1] * pos[1] + plane[2] * pos[2] + plane[3]) * divider;
+      distances[splatIdx] = dist;
+      m_indices[splatIdx] = (uint32_t)splatIdx;
+    }
+    END_PAR_LOOP()
+
+    // comparison function working on the data <dist,idex>
+    auto compare = [&](size_t i, size_t j) { return distances[i] > distances[j]; };
+
+    // Sorting the array with respect to distance keys
+    std::sort(std::execution::par_unseq, m_indices.begin(), m_indices.end(), compare);
   }
-  END_PAR_LOOP()
-
-  m_profiler->asyncEndSection(timer);
-
-  timer = m_profiler->asyncBeginSection("CPU Sort");
-
-  // comparison function working on the data <dist,idex>
-  auto compare = [&](size_t i, size_t j) { return distances[i] > distances[j]; };
-
-  // Sorting the array with respect to distance keys
-  std::sort(std::execution::par_unseq, m_indices.begin(), m_indices.end(), compare);
-
-  m_profiler->asyncEndSection(timer);
 
   return true;
 }
